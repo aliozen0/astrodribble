@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 export let scene;
-export let renderer;
+export let renderer; // Bu global renderer, game.js'deki ana renderer ile aynı nesne olmalı.
 
 export function createScene() {
     scene = new THREE.Scene();
@@ -10,17 +10,30 @@ export function createScene() {
 }
 
 export function createRenderer() {
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    document.body.appendChild(renderer.domElement);
-    return renderer;
+    // Bu fonksiyon game.js'de çağrılıp global `renderer` atanıyor.
+    const localRenderer = new THREE.WebGLRenderer({ antialias: true });
+    localRenderer.setSize(window.innerWidth, window.innerHeight);
+    localRenderer.shadowMap.enabled = true;
+    document.body.appendChild(localRenderer.domElement);
+    return localRenderer;
 }
 
-export function handleWindowResize(camera) {
-    window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+// handleWindowResize, artık aktif renderer'ı parametre olarak alıyor.
+export function handleWindowResize(camera, activeRenderer) {
+    const onWindowResize = () => {
+        if (camera && activeRenderer) {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            activeRenderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    };
+
+    window.addEventListener('resize', onWindowResize);
+
+    // Temizleme fonksiyonunu döndür
+    const cleanupResizeListener = () => {
+        console.log("Window resize listener (scene.js) kaldırılıyor...");
+        window.removeEventListener('resize', onWindowResize);
+    };
+    return cleanupResizeListener;
 }

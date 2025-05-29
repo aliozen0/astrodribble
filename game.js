@@ -5,50 +5,57 @@ import { createPlayer, setupPlayerControls } from './core/player.js';
 import { Ball } from './core/ball.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'; // <-- YENİ IMPORT
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import * as THREE from 'three';
 
 export const gltf_loader = new GLTFLoader();
-export const fbx_loader = new FBXLoader(); // <-- YENİ LOADER
-let updatePlayerMovement; // setupPlayerControls'dan dönen fonksiyonu saklar
+export const fbx_loader = new FBXLoader();
+let gameRenderer;
+let camera;
+
+let updatePlayerAndSystem;
+let cleanupPlayerSystem = null;
+let cleanupResizeHandler = null;
+
 let ball;
 export let hoops = [];
 let score = 0;
 let scoreElement;
 
-export let currentLevel = 1; // Başlangıç seviyesi
+export let currentLevel = 1;
 export const levelSettings = {
     1: {
         name: "Dünya",
         gravity: 0.015,
         courtTexture: 'textures/court_texture.jpg',
-        hdriPath: 'textures/hdri/earth_sky.hdr', // Dünya için HDRI yolu
-        skyColor: 0x87CEEB // HDRI yüklenemezse kullanılacak yedek renk
+        hdriPath: 'textures/hdri/earth_sky.hdr',
+        skyColor: 0x87CEEB
     },
     2: {
         name: "Mars",
         gravity: 0.0057,
         courtTexture: 'textures/court_texture_mars.jpg',
-        hdriPath: 'textures/hdri/mars_sky.hdr', // Mars için HDRI yolu
+        hdriPath: 'textures/hdri/mars_sky.hdr',
         skyColor: 0xFF7F50
     },
     3: {
         name: "Europa Uydusu",
         gravity: 0.01125,
         courtTexture: 'textures/court_texture_europa.jpg',
-        hdriPath: 'textures/hdri/europa_sky.hdr', // Europa için HDRI yolu
+        hdriPath: 'textures/hdri/europa_sky.hdr',
         skyColor: 0xADD8E6
     },
     4: {
         name: "Kara Delik Gezegeni",
         gravity: 0.0225,
         courtTexture: 'textures/court_texture_blackhole.jpg',
-        hdriPath: 'textures/hdri/blackhole_sky.hdr', // Kara Delik G. için HDRI yolu
+        hdriPath: 'textures/hdri/blackhole_sky.hdr',
         skyColor: 0x101020
     }
 };
 
-const rgbeLoader = new RGBELoader(); // RGBELoader'ı bir kere oluştur
+const rgbeLoader = new RGBELoader();
+const clock = new THREE.Clock();
 
 function setEnvironment(settings) {
     if (settings.hdriPath) {
@@ -66,7 +73,7 @@ function setEnvironment(settings) {
         globalScene.background = new THREE.Color(settings.skyColor);
         globalScene.environment = null;
         console.warn(settings.name + " için hdriPath tanımlanmamış, düz renk kullanılıyor.");
-    } else { // Ne HDRI ne de skyColor tanımlıysa varsayılan bir renk
+    } else {
         globalScene.background = new THREE.Color(0x333333);
         globalScene.environment = null;
         console.warn(settings.name + " için ne hdriPath ne de skyColor tanımlı. Varsayılan arka plan kullanılıyor.");
@@ -82,86 +89,69 @@ function updateScoreDisplay() {
 export function incrementScore() {
     score++;
     updateScoreDisplay();
-    console.log("Skor:", score);
+    // Skor olduğunda çağrılan `checkHoopCollision` içindeki konsol mesajı daha belirgin
 }
 
-let renderer;
 let animationFrameId = null;
 
-function cleanupScene() {
-    console.log("Sahne temizleniyor...");
-
-    // DOM'dan güç barını kaldır
-    const powerBar = document.querySelector('div[style*="fixed"][style*="20px"][style*="200px"]');
-    if (powerBar && powerBar.parentElement === document.body) {
-        console.log("Güç barı kaldırılıyor.");
-        document.body.removeChild(powerBar);
-    }
-
-    // Yörünge çizgisini temizle (shoot.js'deki dispose da bu işi yapmalı)
-    // Eğer shootingSystem'e global bir referansımız olsaydı, dispose'unu çağırabilirdik.
-    // Şimdilik, adı "trajectoryLine_Astrodribble" olan nesneyi arayıp kaldıralım (bu isim shoot.js'de verilmeli)
-    const trajectoryLine = globalScene.getObjectByName("trajectoryLine_Astrodribble"); // Bu isimlendirme shoot.js'de yapılmalı
-    if (trajectoryLine) {
-        globalScene.remove(trajectoryLine);
-        if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
-        if (trajectoryLine.material) trajectoryLine.material.dispose();
-        console.log("Yörünge çizgisi (varsa) kaldırıldı.");
-    }
-
-
-    // Sahnedeki diğer nesneleri (ışıklar ve kamera hariç) kaldır
-    for (let i = globalScene.children.length - 1; i >= 0; i--) {
-        const child = globalScene.children[i];
-        if (child.type !== "PerspectiveCamera" &&
-            child.type !== "DirectionalLight" &&
-            child.type !== "AmbientLight") {
-            if(child.geometry) child.geometry.dispose();
-            if(child.material) {
-                if (Array.isArray(child.material)) {
-                    child.material.forEach(material => { if(material.dispose) material.dispose(); });
-                } else {
-                    if(child.material.dispose) child.material.dispose();
-                }
-            }
-            globalScene.remove(child);
-        }
-    }
-    hoops = []; // Pota dizisini sıfırla
-    // ball ve player init içinde yeniden oluşturulacak
-}
-
-function resetAndInitLevel() {
-    console.log("resetAndInitLevel çağrıldı.");
-
+function performFullCleanup() {
+    console.log("performFullCleanup çağrıldı. Önceki seviyeden kalanlar temizleniyor...");
     if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
         console.log("Animasyon durduruldu.");
     }
-
-    // Event listener'ları temizlemek için daha iyi bir yöntem gerekir.
-    // Şimdilik, setupPlayerControls içindeki listener'lar birikebilir.
-    // player.js'deki shootingSystem.dispose() çağrılmalı.
-    if (typeof updatePlayerMovement === 'function') {
-        // Bu, listener'ları kaldırmaz, sadece update döngüsünü durdurur.
-        // Bu, shoot.js'deki shootingSystem'in dispose metodunu çağırmıyor.
-        // Daha iyi bir çözüm, setupPlayerControls'un bir "cleanup" fonksiyonu döndürmesidir.
-        updatePlayerMovement = null;
+    if (cleanupPlayerSystem) {
+        cleanupPlayerSystem();
+        cleanupPlayerSystem = null;
     }
+    updatePlayerAndSystem = null;
+    if (cleanupResizeHandler) {
+        cleanupResizeHandler();
+        cleanupResizeHandler = null;
+    }
+    for (let i = globalScene.children.length - 1; i >= 0; i--) {
+        const child = globalScene.children[i];
+        // Kamera ve ışıkları sahnede tut
+        if (child.isCamera || child.isLight) {
+            continue;
+        }
+        
+        // Belleği temizle
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+            if (Array.isArray(child.material)) {
+                child.material.forEach(material => { if (material.dispose) material.dispose(); });
+            } else if (child.material.dispose) {
+                child.material.dispose();
+            }
+        }
+        child.traverse(subChild => {
+            if (subChild.isMesh) {
+                if (subChild.geometry) subChild.geometry.dispose();
+                if (subChild.material) {
+                     if (Array.isArray(subChild.material)) {
+                        subChild.material.forEach(material => { if (material.dispose) material.dispose(); });
+                    } else if (subChild.material.dispose) {
+                        subChild.material.dispose();
+                    }
+                }
+            }
+        });
+        globalScene.remove(child);
+    }
+    hoops = [];
+    ball = null;
+    console.log("Sahne nesneleri temizlendi.");
+}
 
-    cleanupScene();
 
-    score = 0; // Seviye değişince skoru sıfırla
+function resetAndInitLevel() {
+    console.log("resetAndInitLevel çağrıldı.");
+    performFullCleanup();
+    score = 0;
     updateScoreDisplay();
-
-    if (renderer && renderer.domElement.parentElement) {
-        renderer.domElement.parentElement.removeChild(renderer.domElement);
-        // renderer.dispose(); // WebGL context'ini de temizler, her zaman gerekli olmayabilir
-    }
-    // renderer = null; // Yeniden kullanılacağı için null yapmayalım
-
-    console.log("Sahne temizlendi, yeni seviye için init() çağrılıyor.");
+    console.log("Tam temizlik yapıldı, yeni seviye için init() çağrılıyor.");
     init();
 }
 
@@ -181,43 +171,44 @@ function init() {
     const settings = levelSettings[currentLevel];
     if (!settings) {
         console.error("Geçerli seviye ayarları bulunamadı! Seviye ID:", currentLevel);
-        currentLevel = 1; // Varsayılana dön
-        settings = levelSettings[currentLevel];
+        currentLevel = 1;
+        init(); // Güvenli bir şekilde tekrar başlat
+        return;
     }
     console.log(settings.name + " gezegeni yükleniyor... Yerçekimi:", settings.gravity);
 
-    createScene(); // globalScene'i oluşturur/ayarlar
-    setEnvironment(settings); // HDRI veya arka plan rengini ayarlar
+    createScene();
+    setEnvironment(settings);
+    camera = createCamera();
 
-    const camera = createCamera(); // camera.js'deki global kamerayı kullanır
-
-    if (!renderer) {
-        renderer = createRenderer();
+    if (!gameRenderer) {
+        gameRenderer = createRenderer();
     } else {
-        if (!renderer.domElement.parentElement) { // DOM'da değilse ekle
-            document.body.appendChild(renderer.domElement);
+        if (!gameRenderer.domElement.parentElement) {
+            document.body.appendChild(gameRenderer.domElement);
         }
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        gameRenderer.setSize(window.innerWidth, window.innerHeight);
     }
 
     scoreElement = document.getElementById('score');
     updateScoreDisplay();
 
-    const player = createPlayer();
-    // player.js içindeki loadModel, modeli globalScene'e ekliyor.
+    createLights(); // Işıkları sahneye ekle
 
+    const player = createPlayer();
     ball = new Ball(settings.gravity);
     globalScene.add(ball.mesh);
 
-    // Potaları yeniden oluştur (hoops dizisini temizlemiştik)
-    hoops = []; // Önceki seviyeden kalan potaları temizle (cleanupScene'de de yapılıyor ama burada da garanti)
+    hoops = [];
     createHoops(hoops, gltf_loader);
 
-    updatePlayerMovement = setupPlayerControls(player, ball, hoops);
+    const playerControlSystem = setupPlayerControls(player, ball, hoops);
+    updatePlayerAndSystem = playerControlSystem.update;
+    cleanupPlayerSystem = playerControlSystem.cleanup;
 
-    enableCameraMotions(renderer, player);
-    handleWindowResize(camera); // Bu da event listener ekler, idealde temizlenmeli
-    createLights(); // Bu ışıklar HDRI ile birlikte çalışacak
+    enableCameraMotions(gameRenderer, player);
+    cleanupResizeHandler = handleWindowResize(camera, gameRenderer);
+
     createCourt(settings.courtTexture);
 
     const buttonConfigs = [
@@ -230,7 +221,7 @@ function init() {
     buttonConfigs.forEach(config => {
         const button = document.getElementById(config.id);
         if (button) {
-            const newButton = button.cloneNode(true); // Eski listener'ları silmek için
+            const newButton = button.cloneNode(true);
             if (button.parentNode) {
                 button.parentNode.replaceChild(newButton, button);
             }
@@ -240,21 +231,29 @@ function init() {
 
     if (!animationFrameId) {
          console.log("Animasyon döngüsü başlatılıyor.");
-         animate(renderer, globalScene, camera);
+         clock.start();
+         animate();
     }
 }
 
-function animate(renderer, sceneRef, cameraRef) {
-    animationFrameId = requestAnimationFrame(() => animate(renderer, sceneRef, cameraRef));
-    if (updatePlayerMovement) {
-        updatePlayerMovement();
+function animate() {
+    animationFrameId = requestAnimationFrame(animate);
+    
+    const deltaTime = clock.getDelta();
+
+    if (updatePlayerAndSystem) {
+        updatePlayerAndSystem(deltaTime);
     }
     if (ball) {
-        ball.update();
+        // GÜNCELLENDİ: ball.update'e deltaTime gönderiliyor
+        ball.update(deltaTime);
         ball.checkHoopCollision(hoops, incrementScore);
     }
     updateCameraPosition();
-    renderer.render(sceneRef, cameraRef);
+
+    if (gameRenderer && globalScene && camera) {
+        gameRenderer.render(globalScene, camera);
+    }
 }
 
 // Oyunu başlat
